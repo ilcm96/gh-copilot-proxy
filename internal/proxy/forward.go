@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -58,6 +59,9 @@ func (s *ProxyServer) forward(w http.ResponseWriter, r *http.Request, target str
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", bearer))
 	req.Header.Set("Copilot-Integration-Id", "vscode-chat")
 	req.Header.Set("Editor-Version", "Neovim/0.9.0")
+	if hasVisionContent(body) {
+		req.Header.Set("Copilot-Vision-Request", "true")
+	}
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -74,4 +78,45 @@ func (s *ProxyServer) forward(w http.ResponseWriter, r *http.Request, target str
 	w.WriteHeader(resp.StatusCode)
 	_, err = io.Copy(w, resp.Body)
 	return err
+}
+
+// hasVisionContent checks for image content in an OpenAI-style request body.
+// hasVisionContent 는 이미지 콘텐츠가 OpenAI-style 요청 본문에 포함되어 있는지 검사합니다.
+func hasVisionContent(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(b, &payload); err != nil {
+		return false
+	}
+	// messages[] -> content[] items with image_url
+	msgs, ok := payload["messages"].([]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range msgs {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		// content may be []any or a string
+		switch content := m["content"].(type) {
+		case []any:
+			for _, part := range content {
+				pm, ok := part.(map[string]any)
+				if !ok {
+					continue
+				}
+				// check both 'image_url' key and 'type' == 'image_url'
+				if _, has := pm["image_url"]; has {
+					return true
+				}
+				if t, ok := pm["type"].(string); ok && strings.EqualFold(t, "image_url") {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
